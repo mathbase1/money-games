@@ -1,1 +1,423 @@
+<!DOCTYPE html> 
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Money Builder</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root{
+    /* JS will auto-tune these so the whole app fits on screen */
+    --noteW: 128px;         /* banknote width (board size) */
+    --coinW:  32px;         /* coin width on the board (≈ 1/4 of note, kept by JS) */
+    --paletteCoinW: 64px;   /* coin width in the PALETTE (bigger than board) */
+    --colGap: 24px;         /* spacing between columns */
+    --padBottom: 120px;     /* space reserved for controls + palette */
+  }
+  body{background:#fff}
+  .fade{animation:fade .2s ease-in forwards;opacity:0;transform:translateY(-6px)}
+  @keyframes fade{to{opacity:1;transform:translateY(0)}}
+  #overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;justify-content:center;align-items:center;z-index:100}
 
+  /* --- sizing that JS controls --- */
+  #board{gap:var(--colGap)!important;padding-bottom:var(--padBottom)}
+  /* BOARD images (unchanged sizes) */
+  .noteImg{width:var(--noteW);height:auto;border-radius:.5rem;box-shadow:0 6px 16px rgba(0,0,0,.15)}
+  .coinImg{width:var(--coinW);height:auto;border-radius:.5rem;box-shadow:0 4px 12px rgba(0,0,0,.12)}
+  /* PALETTE images (notes same size as board; COINS BIGGER for clarity) */
+  .paletteNote{width:var(--noteW);height:auto;border-radius:.5rem;box-shadow:0 6px 16px rgba(0,0,0,.18)}
+  .paletteCoin{width:var(--paletteCoinW);height:auto;border-radius:.5rem;box-shadow:0 6px 16px rgba(0,0,0,.18)}
+
+  /* column visuals */
+  .money-col{
+    background:linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+    border:1px solid #e5e7eb;border-radius:14px;padding:10px 8px;
+    box-shadow:0 8px 24px rgba(67,56,202,.08) inset;
+    min-width:calc(var(--noteW) + 16px);
+  }
+  .col-label{pointer-events:none} /* so drops work when hovering the label */
+
+  /* hover highlight for cross-device drag */
+  .dropTarget{outline:3px dashed #4338ca;outline-offset:-6px}
+
+  /* palette styling */
+  #palette{
+    backdrop-filter:blur(8px);
+    border:1px solid rgba(67,56,202,.15);
+  }
+
+  /* compact header when space is tight */
+  body.compact h1{margin-top:.25rem}
+</style>
+</head>
+<body class="min-h-screen flex flex-col items-center gap-2 select-none overflow-hidden">
+
+<!-- ===== overlay menu ===== -->
+<div id="overlay">
+  <div class="bg-white rounded-xl shadow-2xl p-6 flex flex-col gap-4 w-[90%] max-w-sm">
+    <h2 class="text-xl font-bold text-center">Start Game</h2>
+
+    <label class="font-semibold">Name</label>
+    <input id="nameInput" type="text" placeholder="Enter your name" class="border rounded px-3 py-2"/>
+
+    <label class="font-semibold">Mode</label>
+    <label class="flex items-center gap-2"><input type="radio" name="mode" value="timer" checked/> Timed game</label>
+    <label class="flex items-center gap-2"><input type="radio" name="mode" value="target"/> Target-score game</label>
+
+    <!-- timer options -->
+    <div id="timerGroup" class="flex flex-col gap-2 pl-4">
+      <label class="flex items-center gap-2"><input type="radio" name="timer" value="300"/> 5&nbsp;min</label>
+      <label class="flex items-center gap-2"><input type="radio" name="timer" value="600" checked/> 10&nbsp;min</label>
+      <label class="flex items-center gap-2"><input type="radio" name="timer" value="900"/> 15&nbsp;min</label>
+      <label class="flex items-center gap-2"><input type="radio" name="timer" value="none"/> No limit</label>
+    </div>
+
+    <!-- target score -->
+    <div id="scoreGroup" class="hidden flex-col gap-2 pl-4">
+      <label class="font-semibold" for="scoreInput">Target score</label>
+      <input id="scoreInput" type="number" min="1" placeholder="e.g. 20" class="border rounded px-3 py-2"/>
+    </div>
+
+    <button id="startBtn" class="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded px-4 py-2">Start</button>
+  </div>
+</div>
+
+<!-- ===== header ===== -->
+<h1 class="text-2xl md:text-3xl font-extrabold mt-1 tracking-tight">💷 Build&nbsp;the&nbsp;Amount</h1>
+<div id="pointsLine" class="text-lg md:text-xl font-semibold">Points: <span id="points">0</span></div>
+<!-- info line -->
+<div class="flex flex-wrap justify-center gap-4 text-base md:text-lg">
+  <div>👤 <span id="playerName">—</span></div>
+  <div>⏱ <span id="timer">--:--</span></div>
+  <div>🏆 Goal&nbsp;<span id="goal">—</span></div>
+  <div>🎯 Target&nbsp;<span id="targetAmount">£0.00</span></div>
+  <!-- Total removed on purpose -->
+</div>
+
+<!-- board -->
+<div id="board" class="flex justify-center py-2 pb-40 max-w-full"></div>
+
+<!-- controls -->
+<div id="controls" class="fixed bottom-28 left-1/2 -translate-x-1/2 flex gap-3 z-40">
+  <button id="checkBtn" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg shadow-md">Check</button>
+  <button id="clearBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-900 px-5 py-2 rounded-lg shadow-md">Clear</button>
+</div>
+
+<!-- palette -->
+<div id="palette" class="fixed bottom-3 left-1/2 -translate-x-1/2 flex gap-3 bg-white/95 rounded-xl shadow-lg px-3 py-2 z-50"></div>
+
+<script>
+// ===== denominations (fixed column order: £50 £10 £1 10p 1p) =====
+const den=[
+  {v:5000,img:'https://en.numista.com/catalogue/photos/england/5e9b2535af8386.76513551-original.jpg',type:'note',label:'£50'},
+  {v:1000,img:'https://en.numista.com/catalogue/photos/england/675f5015e92482.16607842-original.jpg',type:'note',label:'£10'},
+  {v:100,img:'https://i.guim.co.uk/img/media/ae2349f5091ba09b849def0e2547855361d1d201/0_0_2400_2400/master/2400.jpg?width=480&dpr=1&s=none&crop=none',type:'coin',label:'£1'},
+  {v:10,img:'https://i.ebayimg.com/images/g/9loAAOSwvwFjvwka/s-l1600.webp',type:'coin',label:'10p'},
+  {v:1,img:'https://en.numista.com/catalogue/photos/royaume-uni/5f25bb14ef6888.75632197-original.jpg',type:'coin',label:'1p'}
+];
+const conv=[
+  {from:4,ratio:10,to:3},
+  {from:3,ratio:10,to:2},
+  {from:2,ratio:10,to:1},
+  {from:1,ratio:5,to:0}
+];
+
+// ===== state =====
+let target=0, points=0, playerName='—';
+let mode='timer'; let timeLeft=null; let timerInt=null; let goal=null;
+const counts=Array(den.length).fill(0);
+const columns=den.map(()=>[]);
+
+// ===== helpers =====
+const gbp=p=>`£${(p/100).toFixed(2)}`;
+const randTarget=()=>Math.floor(Math.random()*(70000-100+1))+100;
+const fmtTime=s=>s===null?'∞':`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+
+// ===== LAYOUT FIT: keep everything on one screen, no overlap =====
+function reserveBottom(){
+  const controls=document.getElementById('controls');
+  const palette=document.getElementById('palette');
+  const totalH=(controls?.getBoundingClientRect().height||0)+(palette?.getBoundingClientRect().height||0)+28;
+  document.documentElement.style.setProperty('--padBottom', totalH+'px');
+}
+function fitsViewport(){
+  return document.body.scrollHeight <= window.innerHeight &&
+         document.body.scrollWidth  <= window.innerWidth;
+}
+function setSizes(noteW, gap){
+  document.documentElement.style.setProperty('--noteW', noteW+'px');
+  document.documentElement.style.setProperty('--coinW', Math.max(18, Math.round(noteW/4))+'px');       // board coin size
+  document.documentElement.style.setProperty('--paletteCoinW', Math.max(36, Math.round(noteW*0.5))+'px'); // PALETTE coin size (bigger)
+  document.documentElement.style.setProperty('--colGap', gap+'px');
+}
+function fitEverything(){
+  reserveBottom();
+  // reset to large, then shrink until it fits
+  let note=128, gap=24;
+  setSizes(note,gap);
+  document.body.classList.remove('compact');
+  document.body.style.transform=''; document.body.style.transformOrigin='';
+  // try shrinking sizes first
+  while(!fitsViewport() && (note>56 || gap>8)){
+    if(note>56) note-=4;
+    if(gap>8 && note%8===0) gap-=2;
+    setSizes(note,gap);
+  }
+  if(note<=72) document.body.classList.add('compact');
+  // last resort: uniform scale < 1 (post-overlay only)
+  const overlayVisible=getComputedStyle(document.getElementById('overlay')).display!=='none';
+  if(!overlayVisible && !fitsViewport()){
+    const scale=Math.min(
+      window.innerWidth / document.body.scrollWidth,
+      window.innerHeight/ document.body.scrollHeight
+    );
+    document.body.style.transformOrigin='top center';
+    document.body.style.transform=`scale(${Math.max(0.85,Math.min(1,scale))})`;
+  }
+}
+window.addEventListener('resize', fitEverything);
+
+// ===== column logic =====
+function ensureColumns(){
+  if(document.getElementById('board').children.length)return;
+  const board=document.getElementById('board');
+
+  // Global desktop drop handlers
+  board.addEventListener('dragover', e=>{ e.preventDefault(); });
+  board.addEventListener('drop', e=>{
+    const data=e.dataTransfer.getData('text/plain');
+    try{
+      const parsed=JSON.parse(data);
+      const colEl=e.target.closest('.money-col');
+      if(colEl && parsed && parsed.kind==='den' && typeof parsed.idx==='number'){
+        addPiece(parsed.idx);
+      }
+    }catch(_){}
+    document.querySelectorAll('.money-col.dropTarget').forEach(c=>c.classList.remove('dropTarget'));
+  });
+
+  den.forEach((d,idx)=>{
+    const col=document.createElement('div');
+    col.className='money-col flex flex-col items-center gap-1';
+    const lbl=document.createElement('div');
+    lbl.textContent=d.label;
+    lbl.className='col-label text-sm font-semibold text-indigo-700/80 mb-1';
+    col.appendChild(lbl);
+    board.appendChild(col);
+    columns[idx].push(col);
+  });
+}
+function getCol(idx){
+  if(idx!==0)return columns[idx][0];
+  // £50: split after 7 items (plus label node)
+  let col=columns[0].at(-1);
+  if(!col || col.children.length>=8){
+    const newCol=document.createElement('div');
+    newCol.className='money-col flex flex-col items-center gap-1';
+    const lbl=document.createElement('div');
+    lbl.textContent=den[0].label;
+    lbl.className='col-label text-sm font-semibold text-indigo-700/80 mb-1';
+    newCol.appendChild(lbl);
+    const board=document.getElementById('board');
+    board.insertBefore(newCol,columns[1][0]);
+    columns[0].push(newCol);
+  }
+  return col;
+}
+function makePiece(idx){
+  const d=den[idx];
+  const img=new Image();
+  img.src=d.img;
+  img.className=`fade ${d.type==='note'?'noteImg':'coinImg'}`;
+  img.alt=d.label; img.draggable=true; img.dataset.d=idx;
+
+  // remove on click
+  img.onclick=()=>{img.parentElement.removeChild(img);counts[idx]--;updateTotal();fitEverything();};
+
+  return img;
+}
+function removePieces(idx,n){
+  let r=n;
+  for(const col of columns[idx]){
+    // skip the label node at index 0
+    while(r>0 && col.children.length>1){
+      col.removeChild(col.lastChild);
+      counts[idx]--; r--;
+    }
+    if(r===0) break;
+  }
+}
+function convert(){
+  let changed=false;
+  conv.forEach(({from,ratio,to})=>{
+    while(counts[from]>=ratio){
+      removePieces(from,ratio);
+      addPiece(to);
+      changed=true;
+    }
+  });
+  if(changed) convert();
+}
+function addPiece(idx){
+  getCol(idx).appendChild(makePiece(idx));
+  counts[idx]++; convert(); updateTotal(); fitEverything();
+}
+function computeTotal(){return counts.reduce((s,c,i)=>s+c*den[i].v,0);}
+// We are intentionally NOT showing the running total:
+function updateTotal(){ /* no-op (hidden on purpose) */ }
+
+// ===== palette & controls =====
+function buildPalette(){
+  const pal=document.getElementById('palette'); pal.innerHTML='';
+  den.forEach((d,i)=>{
+    const btn=document.createElement('button');
+    btn.className='hover:scale-105 transition relative';
+    // NOTES stay same size as board, COINS larger for clarity:
+    const cls = d.type==='note' ? 'paletteNote' : 'paletteCoin';
+    btn.innerHTML=`<img src="${d.img}" class="${cls}" alt="${d.label}"/>`;
+    btn.title=d.label;
+
+    // click to add
+    btn.onclick=()=>addPiece(i);
+
+    // desktop drag
+    btn.draggable=true;
+    btn.ondragstart=e=>e.dataTransfer.setData('text/plain',JSON.stringify({kind:'den',idx:i}));
+
+    // pointer drag (touch/pen) with ghost + column highlight
+    btn.addEventListener('pointerdown',ev=>startPointerDragPalette(ev,i),{passive:false});
+
+    pal.appendChild(btn);
+  });
+}
+function bindControls(){
+  document.getElementById('checkBtn').onclick=()=>{
+    if(computeTotal()===target){
+      points++;document.getElementById('points').textContent=points;
+      alert('✅ Correct!');
+      nextRound();
+    }else{
+      alert('❌ Try again');
+    }
+  };
+  document.getElementById('clearBtn').onclick=()=>{
+    columns.forEach(arr=>arr.forEach(c=>{
+      // keep the label (first child)
+      while(c.children.length>1) c.removeChild(c.lastChild);
+    }));
+    counts.fill(0); updateTotal(); fitEverything();
+  };
+}
+
+// ===== overlay logic =====
+function toggleGroups(){
+  const modeVal=document.querySelector('input[name="mode"]:checked').value;
+  document.getElementById('timerGroup').classList.toggle('hidden',modeVal!=='timer');
+  document.getElementById('scoreGroup').classList.toggle('hidden',modeVal!=='target');
+}
+document.querySelectorAll('input[name="mode"]').forEach(r=>r.onchange=toggleGroups);
+
+document.getElementById('startBtn').onclick=()=>{
+  playerName=document.getElementById('nameInput').value.trim()||'Player';
+  mode=document.querySelector('input[name="mode"]:checked').value;
+  document.getElementById('playerName').textContent=playerName;
+  if(mode==='timer'){
+    const sel=document.querySelector('input[name="timer"]:checked').value;
+    timeLeft=sel==='none'?null:parseInt(sel,10);
+    document.getElementById('goal').textContent='—';
+    startTimer();
+  }else{
+    goal=parseInt(document.getElementById('scoreInput').value,10);
+    if(isNaN(goal)||goal<1){alert('Enter a positive target score');return;}
+    document.getElementById('goal').textContent=goal;
+    timeLeft=null; document.getElementById('timer').textContent='∞';
+  }
+  document.getElementById('overlay').style.display='none';
+  nextRound();
+  fitEverything();
+};
+function startTimer(){
+  clearInterval(timerInt);
+  document.getElementById('timer').textContent=fmtTime(timeLeft);
+  if(timeLeft===null) return;
+  timerInt=setInterval(()=>{
+    if(--timeLeft<0){
+      clearInterval(timerInt);
+      alert(`Time's up! Final points: ${points}`);
+      location.reload();
+    }else{
+      document.getElementById('timer').textContent=fmtTime(timeLeft);
+    }
+  },1000);
+}
+
+// ===== rounds =====
+function nextRound(){
+  // clear columns but keep labels
+  columns.forEach(arr=>arr.forEach(c=>{
+    while(c.children.length>1) c.removeChild(c.lastChild);
+  }));
+  counts.fill(0);
+  target=randTarget();
+  document.getElementById('targetAmount').textContent=gbp(target);
+  updateTotal();
+  if(goal!==null && points>=goal){alert('🎉 Goal reached!');location.reload();}
+  fitEverything();
+}
+
+// ===== Cross-device palette drag (touch/pen) =====
+let dragGhost=null, hoverCol=null;
+function createGhost(el,x,y){
+  const img=el.querySelector('img');
+  const g=img.cloneNode(true);
+  Object.assign(g.style,{
+    position:'fixed',
+    left:(x - img.getBoundingClientRect().width/2)+'px',
+    top:(y - img.getBoundingClientRect().height/2)+'px',
+    width:getComputedStyle(img).width,
+    height:'auto',opacity:'0.95',pointerEvents:'none',transform:'scale(1.05)',zIndex:'99'
+  });
+  document.body.appendChild(g); return g;
+}
+function startPointerDragPalette(e,idx){
+  if(e.pointerType==='mouse') return; // mouse uses native HTML5 drag
+  e.preventDefault();
+  dragGhost=createGhost(e.currentTarget,e.clientX,e.clientY);
+
+  function move(ev){
+    dragGhost.style.left=(ev.clientX - dragGhost.getBoundingClientRect().width/2)+'px';
+    dragGhost.style.top =(ev.clientY - dragGhost.getBoundingClientRect().height/2)+'px';
+
+    // find nearest column under pointer
+    const colEl = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.money-col') || null;
+    if(hoverCol!==colEl){
+      if(hoverCol) hoverCol.classList.remove('dropTarget');
+      hoverCol=colEl;
+      if(hoverCol) hoverCol.classList.add('dropTarget');
+    }
+  }
+  function up(){
+    document.removeEventListener('pointermove',move);
+    document.removeEventListener('pointerup',up,true);
+    if(dragGhost){dragGhost.remove();dragGhost=null;}
+    if(hoverCol){
+      hoverCol.classList.remove('dropTarget');
+      addPiece(idx);
+      hoverCol=null;
+    }
+  }
+  document.addEventListener('pointermove',move,{passive:false});
+  document.addEventListener('pointerup',up,true);
+}
+
+// ===== init =====
+window.addEventListener('DOMContentLoaded',()=>{
+  ensureColumns();
+  buildPalette();
+  bindControls();
+  reserveBottom();
+  fitEverything();
+});
+</script>
+</body>
+</html>
